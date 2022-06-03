@@ -11,8 +11,8 @@ namespace EditorScripts {
 
             var mapGenerator = (MapGenerator)target;
 
-            if (GUILayout.Button("Initialize")) {
-                mapGenerator.Refresh();
+            if (GUILayout.Button("Clear")) {
+                mapGenerator.Clear();
             }
 
             if (GUILayout.Button("Generate")) {

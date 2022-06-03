@@ -1,102 +1,135 @@
 using System.Collections;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
 namespace Scripts {
     public class MapGenerator : MonoBehaviour {
         public Tilemap tilemap;
-        public MapTile grassTile, waterTile, mountainTile;
+        public MapTile blankTile, grassTile, waterTile;
 
         public Vector2Int size;
-        public Vector2 offset;
-        [Range(.01f, 1)]
-        public float waterLevel;
-        [Range(0, 10000)]
-        public int generations;
-        public float waitTime;
+        [Range(0, 100)]
+        public int makeGenerations;
+        [Range(0,1f)]
+        public float waitTime, waterLevel;
+        public NoiseLayer[] noiseLayers;
 
-        int[,] tiles;
+        TileInfo[,] readTiles, writeTiles;
         int width, height;
 
-        public void Refresh() {
-            tiles = new int[size.x,size.y];
+        void Start() {
+            Clear();
+        }
+
+        public void Clear() {
+            writeTiles = new TileInfo[size.x,size.y];
             width = size.x / 2;
             height = size.y / 2;
 
-            Initialize();
+            StartCoroutine(NoiseAltitude());
+            StartCoroutine(RefreshTiles());
         }
 
         public void Generate() {
-            StartCoroutine(MakeContinents());
+            StartCoroutine(GenerateCoroutine());
         }
 
-        void Initialize() {
+        IEnumerator GenerateCoroutine() {
+            yield return StartCoroutine(MakeContinents());
+            yield return new WaitForSeconds(1);
+            yield return StartCoroutine(MakePoles());
+        }
+
+        IEnumerator NoiseAltitude() {
             for (int i = 0; i < size.x; i++) {
                 for (int j = 0; j < size.y; j++) {
-                    var altitude = Random.value;
-                    // tiles[i,j] = altitude <= waterLevel ? 0 : 1;
-                    tiles[i,j] = Random.Range(0,3);
+                    var fi = i / (float)size.x;
+                    var fj = j / (float)size.y;
+                    float x = 0, y = 0;
+                    foreach (var layer in noiseLayers) {
+                        x += (fi * layer.frequency) + layer.offset.x;
+                        y += (fj * layer.frequency) + layer.offset.y;
+                    }
+                    writeTiles[i,j].altitude = Mathf.PerlinNoise(x, y);
+                    writeTiles[i,j].type = writeTiles[i,j].altitude <= waterLevel ? 0 : 1;
                 }
             }
-            AssignTiles();
+            yield return RefreshTiles();
         }
 
         IEnumerator MakeContinents() {
-            for (int generation = 0; generation < generations; generation++) {
+            var tiles = readTiles.Cast<TileInfo>().Where(t => t.type == 1);
+            var avg = tiles.Sum(t => t.altitude) / (float)tiles.Count();
+            for (int generation = 0; generation < makeGenerations; generation++) {
                 for (int i = 0; i < size.x; i++) {
                     for (int j = 0; j < size.y; j++) {
-                        var neighbors = SumNeighbors(i,j);
-                        // if (tiles[i,j] == 0 && neighbors == 3) {
-                        //     tiles[i,j] = 1;
-                        // } else if (tiles[i,j] == 1) {
-                        //     if (neighbors < 2 || neighbors > 3) {
-                        //         tiles[i,j] = 0;
-                        //     }
-                        // }
-                        
+                        if (readTiles[i,j].altitude > waterLevel && readTiles[i,j].altitude < avg) {
+                            var sum = SumNeighbors(i,j);
+                            var landBridge = sum >= 2 && sum <= 4;
+                            var island = sum <= 1;
+                            if ((landBridge || island) && Random.value < .5f) {
+                                writeTiles[i,j].altitude = waterLevel;
+                                writeTiles[i,j].type = 0;
+                            }
+                        }
                     }
                 }
-                AssignTiles();
-
-                yield return new WaitForSeconds(waitTime);
+                yield return RefreshTiles();
             }
         }
 
-        void AssignTiles() {
+        IEnumerator MakePoles() {
+            var tiles = readTiles.Cast<TileInfo>().Where(t => t.type == 1);
+
+            yield return RefreshTiles();
+        }
+
+        void DrawTiles() {
             for (int i = 0; i < size.x; i++) {
                 for (int j = 0; j < size.y; j++) {
-                    MapTile tile;
-                    if (tiles[i,j] == 0) {
-                        tile = waterTile;
-                    } else if (tiles[i,j] == 1) {
-                        tile = grassTile;
+                    // TODO: Color should be determined in a method in the TileInfo class derived from other props
+                    Color color;
+                    if (readTiles[i,j].type == 0) {
+                        color = Color.Lerp(Color.blue, Color.cyan, readTiles[i,j].altitude);
                     } else {
-                        tile = mountainTile;
+                        color = Color.Lerp(new Color(0, .5f, 0), new Color(0, 1, 0), readTiles[i,j].altitude);
                     }
-                    tilemap.SetTile(new Vector3Int(i-width, j-height), tile);
+                    tilemap.SetColor(new Vector3Int(i-width, j-height), color);
+                    tilemap.SetTile(new Vector3Int(i-width, j-height), blankTile);
                 }
             }
         }
 
-        int SumNeighbors(int i, int j) {
+        IEnumerator RefreshTiles() {
+            readTiles = (TileInfo[,])writeTiles.Clone();
+            DrawTiles();
+            yield return new WaitForSeconds(waitTime);
+        }
+
+        Vector2Int[] GetNeighbors(int i, int j) {
+            // TODO: This likely doesn't work right on the edges. Instead just don't include if past the limits.
             var im = Mathf.Max(i-1, 0);
             var jm = Mathf.Max(j-1, 0);
             var ip = Mathf.Min(i+1, size.x-1);
             var jp = Mathf.Min(j+1, size.y-1);
-            
+            return new Vector2Int[] {
+                new Vector2Int(im, j),
+                new Vector2Int(i, jp),
+                new Vector2Int(i, jm),
+                new Vector2Int(ip, jp),
+                new Vector2Int(ip, j),
+                new Vector2Int(ip, jm),
+            };
         }
 
-        // int SumNeighbors(int i, int j) {
-        //     var im = Mathf.Max(i-1, 0);
-        //     var jm = Mathf.Max(j-1, 0);
-        //     var ip = Mathf.Min(i+1, size.x-1);
-        //     var jp = Mathf.Min(j+1, size.y-1);
-        //     return tiles[im, j] +
-        //         tiles[i, jp] +
-        //         tiles[i, jm] +
-        //         tiles[ip, jp] +
-        //         tiles[ip, j] +
-        //         tiles[ip, jm];
-        // }
+        int SumNeighbors(int i, int j) {
+            var neighbors = GetNeighbors(i, j);
+            int sum = 0;
+            foreach (var neighbor in neighbors) {
+                sum += readTiles[neighbor.x, neighbor.y].type;
+            }
+            return sum;
+        }
     }
 }
